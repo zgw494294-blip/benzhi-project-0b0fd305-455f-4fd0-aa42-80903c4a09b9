@@ -29,10 +29,13 @@ func (s *FileStore) PutObject(ctx context.Context, content []byte, expected stri
 	}
 	path := s.layout.object(digest)
 	if info, err := os.Stat(path); err == nil {
-		if info.Size() != size {
-			return "", fmt.Errorf("同摘要对象尺寸冲突")
+		if info.Size() == size && verifyObjectDigest(path, digest) {
+			return digest, nil
 		}
-		return digest, nil
+		// 同路径对象尺寸或摘要不匹配（例如同尺寸损坏内容）：不当作缓存命中，
+		// 落到下方原子写入用正确内容覆盖，避免新修订继续引用损坏对象。
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
 		return "", err
@@ -59,7 +62,10 @@ func (s *FileStore) PutObject(ctx context.Context, content []byte, expected stri
 		return "", err
 	}
 	if err = os.Rename(name, path); err != nil {
-		if _, statErr := os.Stat(path); statErr == nil {
+		// 并发上传可能在同一时刻原子写入同一摘要对象；只有当既有对象尺寸与摘要
+		// 都正确时才算成功，否则继续报错，避免把损坏对象当作缓存命中。
+		if info, statErr := os.Stat(path); statErr == nil && info.Size() == size && verifyObjectDigest(path, digest) {
+			ok = true
 			return digest, nil
 		}
 		return "", err
@@ -104,4 +110,19 @@ func (r *contextReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	return r.reader.Read(p)
+}
+
+// verifyObjectDigest 重算磁盘上既有对象的 SHA-256，仅在字节数和摘要都匹配时返回 true。
+// 这用于内容寻址对象的缓存命中判断，避免同尺寸损坏内容被错误复用。
+func verifyObjectDigest(path, expectedDigest string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return false
+	}
+	return hex.EncodeToString(h.Sum(nil)) == expectedDigest
 }
