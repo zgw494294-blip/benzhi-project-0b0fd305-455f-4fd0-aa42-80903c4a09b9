@@ -82,6 +82,13 @@ func (l *Log) recover() error {
 func (l *Log) Append(event Event) (Frame, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return l.appendLocked(event)
+}
+
+// appendLocked encodes and persists a frame, then records it in the in-memory
+// chain. Callers must already hold l.mu so that the previous-digest and
+// sequence derivation stay consistent with the on-disk append.
+func (l *Log) appendLocked(event Event) (Frame, error) {
 	seq := uint64(len(l.frames) + 1)
 	previous := ""
 	if len(l.frames) > 0 {
@@ -113,6 +120,42 @@ func (l *Log) Append(event Event) (Frame, error) {
 	}
 	l.frames = append(l.frames, decoded)
 	return decoded, nil
+}
+
+// IssueReceipt atomically allocates the next global receipt sequence number,
+// reads the previously issued receipt's digest, invokes build to construct the
+// receipt and the receipt.issued audit event, and appends that event while
+// still holding the log lock. Performing allocation, previous-digest reads,
+// receipt construction and publication within a single critical section
+// guarantees that concurrent freezes of different submissions observe unique,
+// consecutive receipt sequences and an unbroken receipt digest chain, so each
+// later receipt references the previously issued receipt's digest.
+func (l *Log) IssueReceipt(build func(sequence uint64, previousReceiptDigest string) (Event, string, error)) (Frame, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	count := uint64(0)
+	previous := ""
+	for _, f := range l.frames {
+		if f.Payload.Type != "receipt.issued" {
+			continue
+		}
+		count++
+		if d, ok := f.Payload.Details["receiptDigest"].(string); ok {
+			previous = d
+		}
+	}
+	sequence := count + 1
+	event, receiptDigest, err := build(sequence, previous)
+	if err != nil {
+		return Frame{}, err
+	}
+	if event.Details == nil {
+		event.Details = map[string]any{}
+	}
+	event.Details["receiptDigest"] = receiptDigest
+	event.Details["sequence"] = sequence
+	event.Details["previousReceiptDigest"] = previous
+	return l.appendLocked(event)
 }
 
 func (l *Log) EventsFor(submissionID string) []Frame {

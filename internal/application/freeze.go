@@ -2,11 +2,11 @@ package application
 
 import (
 	"context"
+	"geopack/internal/audit"
 	"geopack/internal/domain"
 )
 
 func (s *Service) Freeze(ctx context.Context, cmd FreezeSubmission) (MutationResult, error) {
-	sequence, previous := s.audit.NextReceiptSequence()
 	return s.execute(ctx, cmd.SubmissionID, "freeze", cmd.IdempotencyKey, cmd, func(sub *domain.Submission) (MutationResult, error) {
 		if cmd.PreflightToken != "" && !sub.ValidatePreflightToken(cmd.PreflightToken) {
 			return MutationResult{}, NewError("preflight_expired", "冻结预检已过期")
@@ -24,11 +24,14 @@ func (s *Service) Freeze(ctx context.Context, cmd FreezeSubmission) (MutationRes
 		if err = s.event("submission.frozen", sub, cmd.ApprovedBy, map[string]any{"manifestDigest": manifest.Digest, "frozenVersion": manifest.FrozenVersion}); err != nil {
 			return MutationResult{}, err
 		}
-		receipt := domain.NewReceipt(sequence, previous, cmd.ApprovedBy, manifest, s.clock())
-		if err = sub.AttachReceipt(receipt, s.clock()); err != nil {
-			return MutationResult{}, err
-		}
-		if err = s.event("receipt.issued", sub, cmd.ApprovedBy, map[string]any{"receiptId": receipt.ReceiptID, "sequence": receipt.Sequence, "previousReceiptDigest": receipt.PreviousReceiptDigest, "receiptDigest": receipt.ReceiptDigest}); err != nil {
+		var receipt domain.AcceptanceReceipt
+		if _, err = s.audit.IssueReceipt(func(sequence uint64, previousReceiptDigest string) (audit.Event, string, error) {
+			receipt = domain.NewReceipt(sequence, previousReceiptDigest, cmd.ApprovedBy, manifest, s.clock())
+			if err := sub.AttachReceipt(receipt, s.clock()); err != nil {
+				return audit.Event{}, "", err
+			}
+			return audit.Event{Type: "receipt.issued", SubmissionID: sub.SubmissionID, AggregateVersion: sub.Version, Actor: cmd.ApprovedBy, OccurredAt: s.clock().UTC(), Details: map[string]any{"receiptId": receipt.ReceiptID}}, receipt.ReceiptDigest, nil
+		}); err != nil {
 			return MutationResult{}, err
 		}
 		return MutationResult{Receipt: &receipt}, nil
