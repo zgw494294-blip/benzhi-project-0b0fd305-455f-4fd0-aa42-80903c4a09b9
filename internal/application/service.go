@@ -32,6 +32,17 @@ func (s *Service) newID(prefix string) string {
 	return domain.NewID(prefix, s.clock(), fmt.Sprintf("%d", n))
 }
 
+// createID derives a submission ID deterministically from the idempotency
+// scope, key and request digest. Because retries of the same logical create
+// request share these three inputs, every attempt resolves to the same ID.
+// This is what lets a retry recover the batch that a previous attempt already
+// persisted (together with its audit event) when the idempotent response write
+// failed: store.Create reports the batch as existing and Create falls back to
+// loading it instead of generating a fresh ID and persisting a second batch.
+func (s *Service) createID(key, digest string) string {
+	return domain.NewID("sub", time.Time{}, "create\x00"+key+"\x00"+digest)
+}
+
 func (s *Service) idemLookup(ctx context.Context, scope, key, digest string) (MutationResult, bool, error) {
 	if result, ok, err := s.idem.lookup(scope, key, digest); err != nil || ok {
 		return result, ok, err
@@ -96,12 +107,26 @@ func (s *Service) Create(ctx context.Context, cmd CreateSubmission) (MutationRes
 		if r, ok, err := s.idemLookup(ctx, "create", cmd.IdempotencyKey, digest); err != nil || ok {
 			return r, err
 		}
-		id := s.newID("sub")
+		id := s.createID(cmd.IdempotencyKey, digest)
 		sub, err := domain.NewSubmission(id, cmd.ProjectName, cmd.RequiredCRS, cmd.AreaBBox, cmd.MaxGroundResolutionCM, s.clock())
 		if err != nil {
 			return MutationResult{}, err
 		}
 		if err = s.store.Create(ctx, sub); err != nil {
+			// A previous attempt may have persisted the batch and appended the
+			// creation audit event but failed while writing the idempotent
+			// response. Because the ID is derived from the idempotency key and
+			// request digest, the batch is addressable by the same ID; when the
+			// store reports it as already existing, recover the original result
+			// instead of surfacing an error that forces the client into a
+			// version conflict or a duplicate batch on the next retry.
+			if existing, loadErr := s.store.Load(ctx, id); loadErr == nil && existing.SubmissionID == id {
+				recovered := MutationResult{Submission: domainClone(existing)}
+				if storeErr := s.idemStore(ctx, "create", cmd.IdempotencyKey, digest, recovered); storeErr != nil {
+					return MutationResult{}, storeErr
+				}
+				return recovered, nil
+			}
 			return MutationResult{}, mapStoreError(err)
 		}
 		if err = s.event("submission.created", sub, "", map[string]any{"projectName": sub.ProjectName}); err != nil {
