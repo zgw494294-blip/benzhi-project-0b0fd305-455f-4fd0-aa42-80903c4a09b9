@@ -24,6 +24,12 @@ func requestDigest(v any) string {
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }
+func cloneMutationResult(r MutationResult) MutationResult {
+	b, _ := json.Marshal(r)
+	var copy MutationResult
+	_ = json.Unmarshal(b, &copy)
+	return copy
+}
 func (c *idempotencyCache) lookup(scope, key, digest string) (MutationResult, bool, error) {
 	if key == "" {
 		return MutationResult{}, false, NewError("idempotency_key_required", "Idempotency-Key 不能为空")
@@ -37,12 +43,10 @@ func (c *idempotencyCache) lookup(scope, key, digest string) (MutationResult, bo
 	if r.RequestDigest != digest {
 		return MutationResult{}, false, NewError("idempotency_conflict", "同一幂等键不能用于不同载荷")
 	}
-	r.Result.Submission = domainClone(r.Result.Submission)
-	return r.Result, true, nil
+	return cloneMutationResult(r.Result), true, nil
 }
 func (c *idempotencyCache) store(scope, key, digest string, result MutationResult) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	result.Submission = domainClone(result.Submission)
-	c.records[scope+"\x00"+key] = idempotentRecord{RequestDigest: digest, Result: result}
+	c.records[scope+"\x00"+key] = idempotentRecord{RequestDigest: digest, Result: cloneMutationResult(result)}
 }
