@@ -252,7 +252,10 @@ func (s *Service) ValidationRuns(ctx context.Context, id string, query Validatio
 		return ValidationRunsResult{}, err
 	}
 	cacheKey := id + "\x00" + strconv.FormatUint(sub.Version, 10) + "\x00" + requestDigest(query)
-	if cached, ok := s.validationQueries[cacheKey]; ok {
+	s.validationMu.RLock()
+	cached, ok := s.validationQueries[cacheKey]
+	s.validationMu.RUnlock()
+	if ok {
 		return cloneValidationRunsResult(cached), nil
 	}
 	filtered := make([]domain.ValidationRun, 0, len(sub.ValidationRuns))
@@ -338,7 +341,9 @@ func (s *Service) ValidationRuns(ctx context.Context, id string, query Validatio
 		}
 		result.Comparison = &ValidationComparison{FromRunID: from.RunID, ToRunID: to.RunID, Results: domain.CompareValidationRuns(*from, *to)}
 	}
+	s.validationMu.Lock()
 	s.validationQueries[cacheKey] = cloneValidationRunsResult(result)
+	s.validationMu.Unlock()
 	return result, nil
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -19,6 +20,7 @@ type Service struct {
 	actors            *actorRegistry
 	idem              *idempotencyCache
 	validationQueries map[string]ValidationRunsResult
+	validationMu      sync.RWMutex
 	clock             func() time.Time
 	ids               atomic.Uint64
 }
