@@ -6,16 +6,16 @@ import (
 )
 
 type actorTask struct {
-	ctx context.Context
-	fn  func() (MutationResult, error)
+	ctx     context.Context
+	fn      func() (MutationResult, error)
+	results chan actorResult
 }
 type actorResult struct {
 	value MutationResult
 	err   error
 }
 type actor struct {
-	queue   chan actorTask
-	results chan actorResult
+	queue chan actorTask
 }
 type actorRegistry struct {
 	mu       sync.Mutex
@@ -35,22 +35,21 @@ func (r *actorRegistry) get(id string) *actor {
 	if a := r.actors[id]; a != nil {
 		return a
 	}
-	a := &actor{queue: make(chan actorTask, r.capacity), results: make(chan actorResult)}
+	a := &actor{queue: make(chan actorTask, r.capacity)}
 	r.actors[id] = a
 	go func() {
 		for task := range a.queue {
-			if err := task.ctx.Err(); err != nil {
-				a.results <- actorResult{err: err}
-				continue
+			value, err := task.fn()
+			select {
+			case task.results <- actorResult{value: value, err: err}:
+			case <-task.ctx.Done():
 			}
-			v, err := task.fn()
-			a.results <- actorResult{value: v, err: err}
 		}
 	}()
 	return a
 }
 func (r *actorRegistry) do(ctx context.Context, id string, fn func() (MutationResult, error)) (MutationResult, error) {
-	task := actorTask{ctx: ctx, fn: fn}
+	task := actorTask{ctx: ctx, fn: fn, results: make(chan actorResult, 1)}
 	a := r.get(id)
 	select {
 	case a.queue <- task:
@@ -58,7 +57,7 @@ func (r *actorRegistry) do(ctx context.Context, id string, fn func() (MutationRe
 		return MutationResult{}, ctx.Err()
 	}
 	select {
-	case result := <-a.results:
+	case result := <-task.results:
 		return result.value, result.err
 	case <-ctx.Done():
 		return MutationResult{}, ctx.Err()
