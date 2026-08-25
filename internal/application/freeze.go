@@ -58,16 +58,9 @@ func (s *Service) Receipt(ctx context.Context, id string, role *domain.ArtifactR
 	manifestOK := actualManifest == sub.FrozenManifest.Digest && sub.Receipt.ManifestDigest == sub.FrozenManifest.Digest
 	actualReceipt := domain.ReceiptDigest(*sub.Receipt)
 	receiptOK := actualReceipt == sub.Receipt.ReceiptDigest
-	allChecks := make([]ArtifactIntegrityCheck, 0, len(sub.FrozenManifest.Artifacts))
-	objectsOK := true
-	for _, artifact := range sub.FrozenManifest.Artifacts {
-		check, checkErr := s.store.VerifyObject(ctx, artifact.ObjectKey, artifact.SizeBytes, artifact.SHA256)
-		if checkErr != nil {
-			return ReceiptView{}, checkErr
-		}
-		item := ArtifactIntegrityCheck{Role: artifact.Role, ArtifactID: artifact.ArtifactID, Revision: artifact.Revision, ObjectKey: artifact.ObjectKey, Exists: check.Exists, ExpectedSizeBytes: check.ExpectedSize, ActualSizeBytes: check.ActualSize, SizeMatches: check.SizeMatches, ExpectedSHA256: check.ExpectedSHA256, ActualSHA256: check.ActualSHA256, DigestMatches: check.DigestMatches}
-		allChecks = append(allChecks, item)
-		objectsOK = objectsOK && item.Exists && item.SizeMatches && item.DigestMatches
+	allChecks, objectsOK, checkErr := s.receiptVerifier.verify(ctx, sub.FrozenManifest.Artifacts)
+	if checkErr != nil {
+		return ReceiptView{}, checkErr
 	}
 	frames, traceErr := s.audit.VerifyTrace(id)
 	linkErr := s.audit.VerifyReceiptLink(sub.Receipt.Sequence, sub.Receipt.PreviousReceiptDigest, sub.Receipt.ReceiptDigest)

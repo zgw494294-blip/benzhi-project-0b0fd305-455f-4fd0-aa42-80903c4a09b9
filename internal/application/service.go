@@ -14,16 +14,24 @@ import (
 )
 
 type Service struct {
-	store  repository.Store
-	audit  *audit.Log
-	actors *actorRegistry
-	idem   *idempotencyCache
-	clock  func() time.Time
-	ids    atomic.Uint64
+	store           repository.Store
+	audit           *audit.Log
+	actors          *actorRegistry
+	idem            *idempotencyCache
+	receiptVerifier *receiptVerifier
+	clock           func() time.Time
+	ids             atomic.Uint64
 }
 
 func NewService(store repository.Store, log *audit.Log) *Service {
-	return &Service{store: store, audit: log, actors: newActorRegistry(64), idem: newIdempotencyCache(), clock: time.Now}
+	return &Service{
+		store:           store,
+		audit:           log,
+		actors:          newActorRegistry(64),
+		idem:            newIdempotencyCache(),
+		receiptVerifier: newReceiptVerifier(store, 16),
+		clock:           time.Now,
+	}
 }
 func domainClone(s *domain.Submission) *domain.Submission { return domain.CloneSubmission(s) }
 
