@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -218,6 +219,13 @@ type ValidationRunsResult struct {
 	Comparison *ValidationComparison `json:"comparison,omitempty"`
 }
 
+func cloneValidationRunsResult(result ValidationRunsResult) ValidationRunsResult {
+	data, _ := json.Marshal(result)
+	var cloned ValidationRunsResult
+	_ = json.Unmarshal(data, &cloned)
+	return cloned
+}
+
 func validCheckCode(code string) bool {
 	switch code {
 	case domain.CheckRequiredRoles, domain.CheckDigest, domain.CheckCRS, domain.CheckResolution, domain.CheckCoverage:
@@ -242,6 +250,10 @@ func (s *Service) ValidationRuns(ctx context.Context, id string, query Validatio
 	sub, err := s.Get(ctx, id)
 	if err != nil {
 		return ValidationRunsResult{}, err
+	}
+	cacheKey := id + "\x00" + strconv.FormatUint(sub.Version, 10) + "\x00" + requestDigest(query)
+	if cached, ok := s.validationQueries[cacheKey]; ok {
+		return cloneValidationRunsResult(cached), nil
 	}
 	filtered := make([]domain.ValidationRun, 0, len(sub.ValidationRuns))
 	for _, run := range sub.ValidationRuns {
@@ -326,6 +338,7 @@ func (s *Service) ValidationRuns(ctx context.Context, id string, query Validatio
 		}
 		result.Comparison = &ValidationComparison{FromRunID: from.RunID, ToRunID: to.RunID, Results: domain.CompareValidationRuns(*from, *to)}
 	}
+	s.validationQueries[cacheKey] = cloneValidationRunsResult(result)
 	return result, nil
 }
 
