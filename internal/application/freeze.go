@@ -6,6 +6,7 @@ import (
 )
 
 func (s *Service) Freeze(ctx context.Context, cmd FreezeSubmission) (MutationResult, error) {
+	sequence, previous := s.audit.NextReceiptSequence()
 	return s.execute(ctx, cmd.SubmissionID, "freeze", cmd.IdempotencyKey, cmd, func(sub *domain.Submission) (MutationResult, error) {
 		if cmd.PreflightToken != "" && !sub.ValidatePreflightToken(cmd.PreflightToken) {
 			return MutationResult{}, NewError("preflight_expired", "冻结预检已过期")
@@ -23,7 +24,6 @@ func (s *Service) Freeze(ctx context.Context, cmd FreezeSubmission) (MutationRes
 		if err = s.event("submission.frozen", sub, cmd.ApprovedBy, map[string]any{"manifestDigest": manifest.Digest, "frozenVersion": manifest.FrozenVersion}); err != nil {
 			return MutationResult{}, err
 		}
-		sequence, previous := s.audit.NextReceiptSequence()
 		receipt := domain.NewReceipt(sequence, previous, cmd.ApprovedBy, manifest, s.clock())
 		if err = sub.AttachReceipt(receipt, s.clock()); err != nil {
 			return MutationResult{}, err
