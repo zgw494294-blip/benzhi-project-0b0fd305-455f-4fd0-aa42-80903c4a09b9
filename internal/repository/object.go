@@ -72,6 +72,12 @@ func (s *FileStore) PutObject(ctx context.Context, content []byte, expected stri
 }
 
 func (s *FileStore) VerifyObject(ctx context.Context, key string, expectedSize int64, expectedDigest string) (ObjectIntegrity, error) {
+	s.verificationMu.RLock()
+	cached, ok := s.objectVerifications[key]
+	s.verificationMu.RUnlock()
+	if ok && cached.ExpectedSize == expectedSize && cached.ExpectedSHA256 == expectedDigest {
+		return cached, nil
+	}
 	check := ObjectIntegrity{ObjectKey: key, ExpectedSize: expectedSize, ExpectedSHA256: expectedDigest}
 	f, err := os.Open(s.layout.object(key))
 	if errors.Is(err, os.ErrNotExist) {
@@ -91,6 +97,9 @@ func (s *FileStore) VerifyObject(ctx context.Context, key string, expectedSize i
 	check.ActualSHA256 = hex.EncodeToString(h.Sum(nil))
 	check.SizeMatches = n == expectedSize
 	check.DigestMatches = check.ActualSHA256 == expectedDigest
+	s.verificationMu.Lock()
+	s.objectVerifications[key] = check
+	s.verificationMu.Unlock()
 	return check, nil
 }
 

@@ -15,8 +15,10 @@ import (
 )
 
 type FileStore struct {
-	mu     sync.RWMutex
-	layout layout
+	mu                  sync.RWMutex
+	verificationMu      sync.RWMutex
+	layout              layout
+	objectVerifications map[string]ObjectIntegrity
 }
 
 func Open(root string) (*FileStore, error) {
@@ -33,7 +35,7 @@ func Open(root string) (*FileStore, error) {
 	if err := os.MkdirAll(l.idempotencyDir(), 0750); err != nil {
 		return nil, err
 	}
-	s := &FileStore{layout: l}
+	s := &FileStore{layout: l, objectVerifications: map[string]ObjectIntegrity{}}
 	if err := s.verifyAll(); err != nil {
 		return nil, err
 	}
