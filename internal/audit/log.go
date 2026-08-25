@@ -69,6 +69,20 @@ func (l *Log) recover() error {
 			return fmt.Errorf("审计帧 JSON 损坏: %w", err)
 		}
 		if err = verifyFrame(frame, seq, previous); err != nil {
+			position, seekErr := f.Seek(0, io.SeekCurrent)
+			if seekErr != nil {
+				return seekErr
+			}
+			info, statErr := f.Stat()
+			if statErr != nil {
+				return statErr
+			}
+			if position == info.Size() {
+				if truncateErr := f.Truncate(offset); truncateErr != nil {
+					return truncateErr
+				}
+				break
+			}
 			return err
 		}
 		l.frames = append(l.frames, frame)
