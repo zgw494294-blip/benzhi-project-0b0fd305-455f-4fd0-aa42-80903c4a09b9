@@ -1,15 +1,21 @@
 package domain
 
-import "encoding/json"
-
 func CloneSubmission(s *Submission) *Submission {
 	if s == nil {
 		return nil
 	}
-	b, _ := json.Marshal(s)
-	var copy Submission
-	_ = json.Unmarshal(b, &copy)
-	return &copy
+	cloned := *s
+	cloned.ValidationRuns = append([]ValidationRun(nil), s.ValidationRuns...)
+	cloned.Discrepancies = append([]Discrepancy(nil), s.Discrepancies...)
+	if s.FrozenManifest != nil {
+		manifest := *s.FrozenManifest
+		cloned.FrozenManifest = &manifest
+	}
+	if s.Receipt != nil {
+		receipt := *s.Receipt
+		cloned.Receipt = &receipt
+	}
+	return &cloned
 }
 
 func FindDiscrepancy(s *Submission, id string) (*Discrepancy, error) {

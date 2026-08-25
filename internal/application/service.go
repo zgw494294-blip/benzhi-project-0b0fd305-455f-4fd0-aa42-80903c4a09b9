@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,10 +21,13 @@ type Service struct {
 	idem   *idempotencyCache
 	clock  func() time.Time
 	ids    atomic.Uint64
+
+	snapshotMu sync.RWMutex
+	snapshots  map[string]*domain.Submission
 }
 
 func NewService(store repository.Store, log *audit.Log) *Service {
-	return &Service{store: store, audit: log, actors: newActorRegistry(64), idem: newIdempotencyCache(), clock: time.Now}
+	return &Service{store: store, audit: log, actors: newActorRegistry(64), idem: newIdempotencyCache(), clock: time.Now, snapshots: map[string]*domain.Submission{}}
 }
 func domainClone(s *domain.Submission) *domain.Submission { return domain.CloneSubmission(s) }
 
@@ -133,7 +137,13 @@ func (s *Service) execute(ctx context.Context, id, scope, key string, request an
 		if err != nil {
 			return MutationResult{}, err
 		}
-		if err = s.store.Save(ctx, sub, oldVersion); err != nil {
+		s.snapshotMu.Lock()
+		err = s.store.Save(ctx, sub, oldVersion)
+		if err == nil {
+			delete(s.snapshots, id)
+		}
+		s.snapshotMu.Unlock()
+		if err != nil {
 			return MutationResult{}, mapStoreError(err)
 		}
 		result.Submission = domainClone(sub)
@@ -220,10 +230,25 @@ func (s *Service) Validate(ctx context.Context, cmd StartValidation) (MutationRe
 }
 
 func (s *Service) Get(ctx context.Context, id string) (*domain.Submission, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.snapshotMu.RLock()
+	cached := s.snapshots[id]
+	s.snapshotMu.RUnlock()
+	if cached != nil {
+		return domainClone(cached), nil
+	}
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
+	if cached = s.snapshots[id]; cached != nil {
+		return domainClone(cached), nil
+	}
 	sub, err := s.store.Load(ctx, id)
 	if err != nil {
 		return nil, mapStoreError(err)
 	}
-	return sub, nil
+	s.snapshots[id] = domainClone(sub)
+	return domainClone(sub), nil
 }
 func (s *Service) List(ctx context.Context) ([]*domain.Submission, error) { return s.store.List(ctx) }
